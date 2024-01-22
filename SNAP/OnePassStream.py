@@ -1,0 +1,272 @@
+import copy
+import time
+import data_deal
+import pandas as pd
+from intbitset import intbitset
+import test
+import test1
+import test2
+
+
+class OnePassStream():
+    def __init__(self,data,relationships,l,K,beta):
+        self.data = data
+        self.relationships = relationships
+        self.max_num = max(self.data.shape[0],self.relationships['user_id2'].max()) + 1
+        self.l = l
+        self.beta = beta
+        self.K = K
+        self.k_list=[]
+        self.friend_ships = {}
+        self.group_count = [0] * self.l
+        self.minimum_value = [-1] * self.l
+        self.minimum_value_id = [-1] * self.l
+        self.minimum_value_group = [-1] * self.l
+        self.S = []
+        self.S_value = []
+        self.S_group = []
+        # Buffer
+        self.B = []
+        self.B_group = []
+        self.func_value = 0
+        self.element_set = intbitset()
+        self.data_id = []
+        self.data_group = []
+        self.counter = 0
+        self.time = None
+
+    def assign_group(self,categorie):
+        if self.l == 2:
+            if categorie == 0:
+                return 0
+            else:
+                return 1
+        elif self.l == 7:
+            if categorie < 72:
+                return categorie // 12
+            else:
+                return 6
+
+    def decide_k_PR(self):
+        group_counts = self.data['group'].value_counts().sort_index()
+        initial_group_allocations = (group_counts / group_counts.sum() * self.K).round().astype(int)
+        initial_total_allocation = initial_group_allocations.sum()
+        difference = self.K - initial_total_allocation
+        if difference > 0:
+            while difference > 0:
+                max_group = initial_group_allocations.idxmax()
+                initial_group_allocations[max_group] += 1
+                difference -= 1
+        else:
+            while difference < 0:
+                non_zero_groups = initial_group_allocations[initial_group_allocations > 0]
+                min_group = non_zero_groups.idxmin()
+                initial_group_allocations[min_group] -= 1
+                difference += 1
+        self.k_list = initial_group_allocations.tolist()
+        print('k_list',self.k_list)
+
+
+    def decide_k_ER(self):
+        resources_per_group = self.K // self.l
+        remaining_resources = self.K % self.l
+        group_allocations = [resources_per_group] * self.l
+        for i in range(remaining_resources):
+            group_allocations[i] += 1
+        self.k_list = group_allocations
+        print('k_list',self.k_list)
+
+
+    def write_deal_relationships(self):
+        relationships_dict = {}
+        for _, row in self.relationships.iterrows():
+            user1 = row['user_id1']
+            user2 = row['user_id2']
+            if user1 not in relationships_dict:
+                relationships_dict[user1] = []
+            relationships_dict[user1].append(user2)
+        file_name = None
+        if self.l == 2:
+            file_name = '../data/gender_relationships_deals.txt'
+        elif self.l == 7:
+            file_name = '../data/AGE_relationships_deals.txt'
+        with open(file_name, 'w') as f:
+            for user_id, friend_list in relationships_dict.items():
+                f.write(f"{user_id} {' '.join(map(str, friend_list))}\n")
+    def read_deal_relationships(self):
+        file_name = None
+        if self.l == 2:
+            file_name = '../data/gender_relationships_deals.txt'
+        elif self.l == 7:
+            file_name = '../data/AGE_relationships_deals.txt'
+        with open(file_name, 'r') as f:
+            for line in f:
+                parts = line.strip().split(' ')
+                user_id = int(parts[0])
+                friends = list(map(int, parts[1:]))
+                self.friend_ships[user_id] = friends
+        for id in self.data['user_id']:
+            if id not in self.friend_ships:
+                self.friend_ships[id] = []
+
+    def data_deal(self):
+
+        self.data['group'] = self.data['categories'].apply(self.assign_group)
+        self.data_id = self.data['user_id'].tolist()
+        self.data_group = self.data['group'].tolist()
+        # self.data[["user_id", "group"]].to_csv("pokec_AGE.txt", header=False, index=False, sep="\t")
+        self.decide_k_ER()
+        self.read_deal_relationships()
+
+    def OPS_algorithm(self):
+        start_time = time.time()
+        for id, group in zip(self.data_id,self.data_group):
+            self.counter += 1
+            if self.group_count[group] < self.k_list[group]:
+                self.S.append(id)
+                tmp_value = self.get_element_value(id)
+                self.element_set.update(self.friend_ships[id])
+                self.S_value.append(tmp_value)
+                self.S_group.append(group)
+                self.group_count[group] += 1
+                self.func_value += tmp_value
+                if self.minimum_value[group] == -1 or self.minimum_value[group] >= tmp_value:
+                    self.minimum_value[group] = tmp_value
+                    self.minimum_value_id[group] = id
+                    self.minimum_value_group[group] = group
+            else:
+                min_value = self.minimum_value[group]
+                min_id = self.minimum_value_id[group]
+                if min_id == -1:
+                    continue
+                if self.is_element_add(min_id,id,self.beta * min_value):
+                    self.update_S(min_id,id,group)
+                    self.use_Buffer()
+                    self.delete_Buffer()
+                else:
+                    g_value = self.cal_value_by_group(group) / self.k_list[group]
+                    if len(self.friend_ships[id]) >= g_value/2:
+                        tmp_value = self.get_element_value(id)
+                        if min_value >= g_value/(1 + self.beta) and tmp_value >= g_value / 2:
+                            self.B.append(id)
+                            self.B_group.append(group)
+        print("ops ",self.func_value)
+
+
+
+    def get_element_value(self, id):
+        element_set = intbitset(self.friend_ships[id])
+        f_S1 = len(self.element_set | element_set)
+        return f_S1 - len(self.element_set)
+
+    def get_S_value(self, S):
+        element_set = intbitset()
+        for s in S:
+            element_set.update(self.friend_ships[s])
+        return element_set
+
+
+    def is_element_add(self,min_id,id,threshold):
+        if len(self.friend_ships[id]) < threshold:
+            return False
+        S = copy.copy(self.S)
+        S.remove(min_id)
+        S.append(id)
+        element_set = self.get_S_value(S)
+        tmp_func_value = len(element_set)
+        return tmp_func_value - self.func_value >= threshold
+
+    def update_S(self,min_id,id,group):
+        min_index = self.S.index(min_id)
+        self.S.pop(min_index)
+        self.S_group.pop(min_index)
+        self.S.append(id)
+        self.S_group.append(group)
+        self.update_minimum_element()
+
+    def update_minimum_element(self):
+        self. minimum_value = [-1] * self.l
+        self. minimum_value_id = [-1] * self.l
+        self. minimum_value_group = [-1] * self.l
+        self.S_value = []
+        self.element_set = intbitset()
+        for id, group in zip(self.S,self.S_group):
+            tmp_value = self.get_element_value(id)
+            self.element_set.update(self.friend_ships[id])
+            self.S_value.append(tmp_value)
+            if self.minimum_value[group] == -1 or self.minimum_value[group] >= tmp_value:
+                self.minimum_value[group] = tmp_value
+                self.minimum_value_id[group] = id
+                self.minimum_value_group[group] = group
+        self.func_value = len(self.element_set)
+
+    def cal_value_by_group(self,target_group):
+        tmp_value = 0
+        for value, group in zip(self.S_value,self.S_group):
+            if group == target_group:
+                tmp_value += value
+        return tmp_value
+
+    def use_Buffer(self):
+        for id, group in zip(self.B, self.B_group):
+            min_value = self.minimum_value[group]
+            min_id = self.minimum_value_id[group]
+            if min_id == -1:
+                continue
+            if self.is_element_add(min_id,id,self.beta * min_value):
+                self.update_S(min_id,id,group)
+                id_index = self.B.index(id)
+                self.B.pop(id_index)
+                self.B_group.pop(id_index)
+
+    def delete_Buffer(self):
+        for id, group in zip(self.B, self.B_group):
+            b_value = self.get_element_value(id)
+            g_value = self.cal_value_by_group(group) / self.k_list[group]
+            if b_value < g_value:
+                id_index = self.B.index(id)
+                self.B.pop(id_index)
+                self.B_group.pop(id_index)
+
+    def local_search(self):
+        print("local_search_begin ")
+        iterator = 0
+        while True:
+            iterator += 1
+            flag = False
+            for i in range(len(self.B)):
+                b_id = self.B[i]
+                b_group = self.B_group[i]
+                min_id = self.minimum_value_id[b_group]
+                if self.is_element_add(min_id,b_id,1):
+                    flag = True
+                    self.update_S(min_id,b_id,b_group)
+                    self.B[i] = min_id
+                    self.B_group[i] = b_group
+            if not flag:
+                break
+        print("local_search ops ",self.func_value)
+        print("local_search_end ")
+
+
+    def main(self):
+        self.data_deal()
+        start_time = time.time()
+        self.OPS_algorithm()
+        self.local_search()
+        end_time = time.time()
+        self.time = end_time - start_time
+        file_name = "OPS_" + "K=" + str(self.K) + "_gender_ER_output.txt"
+        with open(file_name, "w") as file:
+            file.write("value: " + str(self.func_value)+"\n")
+            file.write("time: " + str(self.time)+"\n")
+            file.write(" ".join(map(str, self.S)))
+
+
+if __name__ == "__main__":
+    data,relationships = data_deal.read_gender(-1)
+    k_list = [100,200,300,400,500,600,700,800,900,1000]
+    for k in k_list:
+        ops = OnePassStream(data,relationships,2,k,40)
+        ops.main()
+
