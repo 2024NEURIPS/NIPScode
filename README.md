@@ -7,5 +7,7 @@ This repository contains the code associated with the paper submitted to the Con
 The code is released under the GNU General Public License, version 3, or any later version as published by the Free Software Foundation.
 ## Usage
 Download the code.
+### Test MOVIE Dataset: 
 To test the movie date, you must first run the Movie/movie_date_deal.py to generate the user_movie_rating_matrix.txt. After that, you can run the algorithm Python code directly.
+### Test POKEC Dataset: 
 To test the POKEC data, you must first download the corresponding dataset and categorize it according to your requirements. Then, you can run the algorithm Python code in the SNAP folder.
